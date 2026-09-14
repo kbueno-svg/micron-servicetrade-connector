@@ -24,11 +24,24 @@ MCP_RESOURCE = os.getenv("MCP_RESOURCE", AUTH0_AUDIENCE).rstrip("/")
 MCP_SCOPE = os.getenv("MCP_SCOPE", "read:servicetrade")
 AUTH0_ISSUER = f"https://{AUTH0_DOMAIN}/"
 
+transport_security = TransportSecuritySettings(
+    enable_dns_rebinding_protection=True,
+    allowed_hosts=[
+        "micron-servicetrade-connector.onrender.com",
+        "micron-servicetrade-connector.onrender.com:*",
+    ],
+    allowed_origins=[
+        "https://chatgpt.com",
+        "https://chat.openai.com",
+    ],
+)
+
 mcp = FastMCP(
     "Micron ServiceTrade",
     stateless_http=True,
     json_response=True,
     streamable_http_path="/",
+    transport_security=transport_security,
 )
 
 
@@ -333,19 +346,5 @@ async def profitability(job_id: int, loaded_labor_rate: Optional[float] = Query(
 
 
 register_tools(mcp, _st_get, labor_summary, profitability)
-transport_security = TransportSecuritySettings(
-    enable_dns_rebinding_protection=True,
-    allowed_hosts=[
-        "micron-servicetrade-connector.onrender.com",
-        "micron-servicetrade-connector.onrender.com:*",
-    ],
-    allowed_origins=[
-        "https://chatgpt.com",
-        "https://chat.openai.com",
-    ],
-)
-
-mcp_http_app = mcp.streamable_http_app(
-    transport_security=transport_security
-)
+mcp_http_app = mcp.streamable_http_app()
 app.mount("/", Auth0MCPMiddleware(mcp_http_app))
