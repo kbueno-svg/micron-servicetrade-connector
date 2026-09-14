@@ -3,15 +3,14 @@ import time
 from typing import Any, Dict, Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 
 SERVICE_TRADE_BASE = os.getenv("SERVICETRADE_BASE_URL", "https://api.servicetrade.com/api").rstrip("/")
 CLIENT_ID = os.getenv("SERVICETRADE_CLIENT_ID")
 CLIENT_SECRET = os.getenv("SERVICETRADE_CLIENT_SECRET")
 CONNECTOR_API_KEY = os.getenv("CONNECTOR_API_KEY")
 
-app = FastAPI(title="Micron ServiceTrade Connector", version="1.0.0")
+app = FastAPI(title="Micron ServiceTrade Connector", version="1.0.1")
 
 _token_cache: Dict[str, Any] = {"token": None, "expires_at": 0}
 
@@ -19,6 +18,13 @@ _token_cache: Dict[str, Any] = {"token": None, "expires_at": 0}
 def _require_config() -> None:
     if not CLIENT_ID or not CLIENT_SECRET:
         raise HTTPException(status_code=500, detail="ServiceTrade credentials are not configured")
+
+
+def _require_connector_key(x_connector_key: Optional[str] = Header(default=None)) -> None:
+    if not CONNECTOR_API_KEY:
+        raise HTTPException(status_code=500, detail="Connector API key is not configured")
+    if x_connector_key != CONNECTOR_API_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 async def _get_token() -> str:
@@ -37,7 +43,7 @@ async def _get_token() -> str:
             },
         )
     if r.status_code >= 400:
-        raise HTTPException(status_code=502, detail=f"ServiceTrade auth failed: {r.text[:300]}")
+        raise HTTPException(status_code=502, detail="ServiceTrade authentication failed")
     data = r.json()
     token = data.get("access_token")
     if not token:
@@ -57,7 +63,7 @@ async def _st_get(path: str, params: Optional[dict] = None) -> dict:
             headers={"Authorization": f"Bearer {token}"},
         )
     if r.status_code >= 400:
-        raise HTTPException(status_code=r.status_code, detail=r.text[:500])
+        raise HTTPException(status_code=r.status_code, detail="ServiceTrade request failed")
     return r.json()
 
 
@@ -67,15 +73,15 @@ def _hours(seconds: int | float | None) -> float:
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "service": "micron-servicetrade-connector"}
+    return {"ok": True, "service": "micron-servicetrade-connector", "version": "1.0.1"}
 
 
-@app.get("/whoami")
+@app.get("/whoami", dependencies=[Depends(_require_connector_key)])
 async def whoami():
     return await _st_get("/oauth2/userinfo")
 
 
-@app.get("/jobs")
+@app.get("/jobs", dependencies=[Depends(_require_connector_key)])
 async def jobs(
     limit: int = Query(20, ge=1, le=100),
     page: int = Query(1, ge=1),
@@ -87,27 +93,27 @@ async def jobs(
     return await _st_get("/job", params=params)
 
 
-@app.get("/jobs/{job_id}")
+@app.get("/jobs/{job_id}", dependencies=[Depends(_require_connector_key)])
 async def job(job_id: int):
     return await _st_get(f"/job/{job_id}")
 
 
-@app.get("/jobs/{job_id}/items")
+@app.get("/jobs/{job_id}/items", dependencies=[Depends(_require_connector_key)])
 async def job_items(job_id: int):
     return await _st_get("/jobitem", params={"jobId": job_id})
 
 
-@app.get("/jobs/{job_id}/invoices")
+@app.get("/jobs/{job_id}/invoices", dependencies=[Depends(_require_connector_key)])
 async def job_invoices(job_id: int):
     return await _st_get("/invoice", params={"jobId": job_id})
 
 
-@app.get("/jobs/{job_id}/clock")
+@app.get("/jobs/{job_id}/clock", dependencies=[Depends(_require_connector_key)])
 async def job_clock(job_id: int):
     return await _st_get(f"/job/{job_id}/clockevent")
 
 
-@app.get("/jobs/{job_id}/labor-summary")
+@app.get("/jobs/{job_id}/labor-summary", dependencies=[Depends(_require_connector_key)])
 async def labor_summary(job_id: int):
     raw = await _st_get(f"/job/{job_id}/clockevent")
     data = raw.get("data", {})
@@ -130,15 +136,20 @@ async def labor_summary(job_id: int):
         name = user.get("name") or str(user.get("id"))
         activity_name = start.get("activity") or "unknown"
         elapsed = pair.get("elapsedTime") or 0
-        row = per_user.setdefault(name, {"userId": user.get("id"), "name": name, "activities": {}, "totalHours": 0})
-        row["activities"][activity_name] = round(row["activities"].get(activity_name, 0) + elapsed / 3600, 2)
+        row = per_user.setdefault(
+            name,
+            {"userId": user.get("id"), "name": name, "activities": {}, "totalHours": 0},
+        )
+        row["activities"][activity_name] = round(
+            row["activities"].get(activity_name, 0) + elapsed / 3600, 2
+        )
         row["totalHours"] = round(row["totalHours"] + elapsed / 3600, 2)
 
     summary["technicians"] = list(per_user.values())
     return summary
 
 
-@app.get("/jobs/{job_id}/profitability")
+@app.get("/jobs/{job_id}/profitability", dependencies=[Depends(_require_connector_key)])
 async def profitability(job_id: int, loaded_labor_rate: Optional[float] = Query(None, ge=0)):
     job_data = (await _st_get(f"/job/{job_id}")).get("data", {})
     items_data = (await _st_get("/jobitem", params={"jobId": job_id})).get("data", {})
@@ -146,7 +157,9 @@ async def profitability(job_id: int, loaded_labor_rate: Optional[float] = Query(
     clock_data = (await _st_get(f"/job/{job_id}/clockevent")).get("data", {})
 
     activity = clock_data.get("activityTime", {})
-    total_job_hours = (activity.get("onsite", 0) + activity.get("enroute", 0) + activity.get("offsite", 0)) / 3600
+    total_job_hours = (
+        activity.get("onsite", 0) + activity.get("enroute", 0) + activity.get("offsite", 0)
+    ) / 3600
 
     item_cost = 0.0
     missing_cost_items = 0
@@ -166,11 +179,21 @@ async def profitability(job_id: int, loaded_labor_rate: Optional[float] = Query(
                 break
 
     estimated_revenue = job_data.get("estimatedPrice")
-    revenue = invoice_revenue or (float(estimated_revenue) if estimated_revenue is not None else 0.0)
-    labor_cost = round(total_job_hours * loaded_labor_rate, 2) if loaded_labor_rate is not None else None
+    revenue = invoice_revenue or (
+        float(estimated_revenue) if estimated_revenue is not None else 0.0
+    )
+    labor_cost = (
+        round(total_job_hours * loaded_labor_rate, 2)
+        if loaded_labor_rate is not None
+        else None
+    )
     known_cost = round(item_cost + (labor_cost or 0), 2)
     gross_profit = round(revenue - known_cost, 2) if revenue else None
-    gross_margin = round(gross_profit / revenue * 100, 2) if revenue and gross_profit is not None else None
+    gross_margin = (
+        round(gross_profit / revenue * 100, 2)
+        if revenue and gross_profit is not None
+        else None
+    )
 
     return {
         "jobId": job_id,
