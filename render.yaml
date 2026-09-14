@@ -4,9 +4,11 @@ services:
     runtime: python
     plan: starter
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
       - key: SERVICETRADE_BASE_URL
         value: https://api.servicetrade.com/api
       - key: SERVICETRADE_CLIENT_ID
