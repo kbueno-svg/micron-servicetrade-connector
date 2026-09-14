@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 
 import httpx
 import jwt
+from mcp.server.transport_security import TransportSecuritySettings
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from jwt import PyJWKClient
 from mcp.server.fastmcp import FastMCP
@@ -332,5 +333,19 @@ async def profitability(job_id: int, loaded_labor_rate: Optional[float] = Query(
 
 
 register_tools(mcp, _st_get, labor_summary, profitability)
-mcp_http_app = mcp.streamable_http_app()
+transport_security = TransportSecuritySettings(
+    enable_dns_rebinding_protection=True,
+    allowed_hosts=[
+        "micron-servicetrade-connector.onrender.com",
+        "micron-servicetrade-connector.onrender.com:*",
+    ],
+    allowed_origins=[
+        "https://chatgpt.com",
+        "https://chat.openai.com",
+    ],
+)
+
+mcp_http_app = mcp.streamable_http_app(
+    transport_security=transport_security
+)
 app.mount("/", Auth0MCPMiddleware(mcp_http_app))
